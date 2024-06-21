@@ -14,7 +14,7 @@ class MultiModalConfig(PretrainedConfig):
         self.resnet_model_paths = resnet_model_paths
         self.vit_model_paths = vit_model_paths
         self.nlp_transformers_model_paths = nlp_transformers_model_paths
-        self.class_names = ["PG", "PG-13", "R", "X", "XXX"]
+        self.class_names = ["PG", "PG-13", "R"]
         self.label2id = {label: i for i, label in enumerate(self.class_names)}
         self.id2label = {i: label for label, i in self.label2id.items()}
 
@@ -23,7 +23,7 @@ class MultiModalModel(PreTrainedModel):
 
     def __init__(self, config: MultiModalConfig):
         super().__init__(config)
-        self.num_classes = 5  # Example with 5 classes
+        self.num_classes = 3
         
         # Initialize the models and set requires_grad = False to freeze them
         self.resnet_models = nn.ModuleDict()
