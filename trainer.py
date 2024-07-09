@@ -1,14 +1,13 @@
 import os
 import torch
-from torch.utils.data import DataLoader
+
 from src.data import CustomImageTextDataset
-from src.training import train_model, evaluate
 from transformers import TrainingArguments, Trainer
 from transformers.tokenization_utils_base import BatchEncoding
 from src.model import MultimodalConfig, MultimodalProcessor, MultimodalModel
 
 ## Get composite pretrained models
-device = torch.device("cuda" if torch.cuda.is_available() else "cpu")
+
 ###models are also at https://huggingface.co/wolfgangblack/multimodalComposite/tree/main
 model_paths = {i: os.path.join('models', i) for i in os.listdir('models') if 'yoloRater' not in i}
 
@@ -64,21 +63,31 @@ def custom_collator(batch):
 ## instantiate model
 model = MultimodalModel(config)
     
+## instantiate trainer - note: this trainer does not allow use to target specific metrics. We'll write our own training loop
+training_args = TrainingArguments(
+    output_dir='./results',          # output directory
+    num_train_epochs=2,
+    per_device_train_batch_size=32,
+    per_device_eval_batch_size=32,
+    warmup_steps=500,                # number of warmup steps for learning rate scheduler
+    weight_decay=0.01,               # strength of weight decay
+    logging_dir='./logs',            # directory for storing logs
+    logging_steps=25,
+    evaluation_strategy="steps",
+    eval_steps=500,
+    save_steps=500,
+    save_safetensors=True,  # Ensure this is supported by your Transformers version
+    report_to='all',  # Enable detailed logging to all available loggers
+    disable_tqdm=False,  # Ensure progress bars are shown
+    logging_first_step=True,  # Log the first step
+)
 
-#### Need to check below
+trainer = Trainer(
+    model=model,
+    args=training_args,
+    train_dataset=training_data,
+    eval_dataset=validation_data,
+    data_collator=custom_collator,
+)
 
-# Set up optimizer and loss function
-optimizer = torch.optim.AdamW(model.parameters(), lr=5e-5)
-criterion = torch.nn.CrossEntropyLoss()
-
-# Train the model
-num_epochs = 10
-target_class = 2  # Prioritize F1 for class 2
-train_model(model, num_epochs, train_dataloader, eval_dataloader, optimizer, criterion, device, target_class)
-
-# Final evaluation
-final_loss, final_accuracy, final_f1, final_class_metrics, _ = evaluate(model, eval_dataloader, criterion, device)
-print("Final Evaluation Results:")
-print(f"Loss: {final_loss:.4f}, Macro Accuracy: {final_accuracy:.4f}, Macro F1 Score: {final_f1:.4f}")
-for class_name, metrics in final_class_metrics.items():
-    print(f"{class_name} - Accuracy: {metrics['accuracy']:.4f}, F1: {metrics['f1']:.4f}")
+trainer.train()
