@@ -1,5 +1,9 @@
 import os
 import torch
+import requests
+from PIL import Image
+from io import BytesIO
+import concurrent.futures
 from torch.utils.data import Dataset
 
 class CustomImageTextDataset(Dataset):
@@ -46,3 +50,48 @@ class CustomImageTextDataset(Dataset):
         string = f"CustomImageTextDataset(num_samples={len(self.files)}, data_dir='{self.data_dir}')\n"
         return string + f"Unique Labels: {list(set(self.labels))} for phase: {os.path.basename(self.data_dir)}"
     
+
+def get_data_for_training(data_item, output_dir):
+    url = data_item['url']
+    prompt = data_item['prompt']
+    prompt_and_tags = data_item['prompt_and_tags']
+    folder = data_item['label']
+    
+    try:
+        response = requests.get(url)
+        if response.status_code == 200:
+            image = Image.open(BytesIO(response.content))
+            if image.mode == "RGBA":
+                image = image.convert("RGB")
+            
+            image_name = url.split('/')[-1]
+            print(image_name)
+            path = os.path.join(output_dir, folder)
+            os.makedirs(path, exist_ok=True)
+            image_path = os.path.join(path, image_name)
+            prompt_path = os.path.join(path, f"{image_name.split('.')[0]}.txt")
+            prompt_and_tags_path = os.path.join(path, f"{image_name.split('.')[0]}_tags.txt")
+            
+            image.save(image_path)
+
+            #save prompt
+            with open(prompt_path, 'w') as f:
+                f.write(prompt)
+
+            #save prompt and tags
+            with open(prompt_and_tags_path, 'w') as f:
+                f.write(prompt_and_tags)
+
+    except Exception as e:
+        print(f"Error processing image from {url}: {e}")
+
+def download_images(imageUrlDict, output_dir, max_workers=8):
+    with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
+        futures = []
+        for index, data_item in imageUrlDict.items():
+
+            futures.append(executor.submit(get_data_for_training, data_item, output_dir))
+        
+        for future in concurrent.futures.as_completed(futures):
+            future.result()
+

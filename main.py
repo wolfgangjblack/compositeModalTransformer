@@ -7,6 +7,8 @@ from transformers.tokenization_utils_base import BatchEncoding
 from src.model import MultimodalConfig, MultimodalProcessor, MultimodalModel
 
 ## Get composite pretrained models
+
+###models are also at https://huggingface.co/wolfgangblack/multimodalComposite/tree/main
 model_paths = {i: os.path.join('models', i) for i in os.listdir('models') if 'yoloRater' not in i}
 
 ## Create Config
