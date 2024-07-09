@@ -7,7 +7,7 @@ from ultralytics import YOLO
 from torchvision import models, transforms
 from transformers import (PretrainedConfig, ViTImageProcessor, ViTForImageClassification,
                           AutoTokenizer, AutoModelForSequenceClassification, PreTrainedModel)
-
+from safetensors.torch import save_file, load_file
 
 class MultimodalConfig(PretrainedConfig):
     model_type = "multimodal"
@@ -245,7 +245,7 @@ class MultimodalModel(PreTrainedModel):
         
         self.mlp = self.mlp.to(self.device)
         features = []        
-        labels = inputs.pop('label', None)
+        labels = inputs.pop('labels', None)
 
         for key in inputs.keys():
             input = inputs[key]
@@ -280,8 +280,8 @@ class MultimodalModel(PreTrainedModel):
         loss = None
         if labels is not None:
             loss = self.loss_fn(logits.view(-1, self.config.num_labels), labels.view(-1))
-
-        return {"loss": loss, "logits": logits} if loss is not None else {"logits": logits}
+    
+        return {"loss": loss, "logits": logits}
 
     @staticmethod
     def replace_yolo_last_linear_with_identity(model):
@@ -294,5 +294,25 @@ class MultimodalModel(PreTrainedModel):
                 setattr(parent, child_name, nn.Identity())
                 return True
         return False
-
     
+    def save_pretrained(self, save_directory, state_dict=None, safe_serialization=False):
+        os.makedirs(save_directory, exist_ok=True)
+        if state_dict is None:
+            state_dict = self.state_dict()
+        if safe_serialization:
+            save_file(state_dict, os.path.join(save_directory, "model.safetensors"))
+        else:
+            print("save torch")
+            torch.save(state_dict, os.path.join(save_directory, "pytorch_model.bin"))
+        self.config.save_pretrained(save_directory)
+    
+    @classmethod
+    def from_pretrained(cls, save_directory, **kwargs):
+        config = cls.config_class.from_pretrained(save_directory)
+        model = cls(config)
+        if kwargs.get("safe_serialization", False):
+            state_dict = load_file(os.path.join(save_directory, "model.safetensors"))
+        else:
+            state_dict = torch.load(os.path.join(save_directory, "pytorch_model.bin"), map_location='cpu')
+        model.load_state_dict(state_dict)
+        return model
