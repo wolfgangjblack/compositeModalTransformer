@@ -1,6 +1,7 @@
 import os
 import torch
 import requests
+from tqdm import tqdm
 from PIL import Image
 from io import BytesIO
 import concurrent.futures
@@ -54,7 +55,7 @@ class CustomImageTextDataset(Dataset):
 def get_data_for_training(data_item, output_dir):
     url = data_item['url']
     prompt = data_item['prompt']
-    prompt_and_tags = data_item['prompt_and_tags']
+    prompt_and_tags = data_item['tags']
     folder = data_item['label']
     
     try:
@@ -65,7 +66,6 @@ def get_data_for_training(data_item, output_dir):
                 image = image.convert("RGB")
             
             image_name = url.split('/')[-1]
-            print(image_name)
             path = os.path.join(output_dir, folder)
             os.makedirs(path, exist_ok=True)
             image_path = os.path.join(path, image_name)
@@ -88,10 +88,8 @@ def get_data_for_training(data_item, output_dir):
 def download_images(imageUrlDict, output_dir, max_workers=8):
     with concurrent.futures.ThreadPoolExecutor(max_workers=max_workers) as executor:
         futures = []
-        for index, data_item in imageUrlDict.items():
-
+        for data_item in tqdm(imageUrlDict.values(), desc="Downloading images"):
             futures.append(executor.submit(get_data_for_training, data_item, output_dir))
         
-        for future in concurrent.futures.as_completed(futures):
+        for future in tqdm(concurrent.futures.as_completed(futures), total=len(futures), desc="Processing images"):
             future.result()
-

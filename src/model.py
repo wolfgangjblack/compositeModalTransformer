@@ -116,7 +116,7 @@ class MultimodalProcessor:
             text_in = self.clean_text(text_in)
             inputs[model] = self.text_processors[model](text_in, return_tensors="pt", truncation=True, padding='max_length')
         
-        inputs['label'] = label 
+        inputs['labels'] = label 
         return inputs
     
 class MultimodalModel(PreTrainedModel):

@@ -2,7 +2,8 @@ import copy
 import torch
 import numpy as np
 from tqdm import tqdm
-from safetensors.torch import save_file
+from contextlib import contextmanager
+from safetensors.torch import save_file, load_file
 from sklearn.metrics import classification_report
 
 class EarlyStopping:
@@ -89,19 +90,15 @@ def evaluate(model, dataloader, criterion, device, target_class=None):
     
     return avg_loss, macro_accuracy, macro_f1, class_metrics, target_metric
 
-### NEED TO REVIEW BELOW
-import torch
-from safetensors.torch import save_file, load_file
-import copy
-from contextlib import contextmanager
-
 @contextmanager
 def evaluation_mode(model):
     model.eval()
     yield
     model.train()
 
-def train_model(model, num_epochs, train_dataloader, eval_dataloader, optimizer, criterion, device, target_class, early_stopping=True, verbose=True):
+def train_model(model,num_epochs, train_dataloader, eval_dataloader,
+                optimizer, criterion, device, target_class,
+                early_stopping=True, verbose=True):
     best_target_metric = float('-inf')
     best_model_weights = None
     history = {'train_loss': [], 'eval_loss': [], 'accuracy': [], 'f1': [], 'target_metric': []}

@@ -1,9 +1,7 @@
 import os
 import torch
-from torch.utils.data import DataLoader
 from src.data import CustomImageTextDataset
 from src.training import train_model, evaluate
-from transformers import TrainingArguments, Trainer
 from transformers.tokenization_utils_base import BatchEncoding
 from src.model import MultimodalConfig, MultimodalProcessor, MultimodalModel
 
@@ -54,11 +52,6 @@ def custom_collator(batch):
             out[key] = var
         else:
             out[key] = [i[key] for i in processed_batch]
-    if 'labels' in out:
-        out['labels'] = torch.tensor(out['labels'])
-    elif 'label' in out:
-        out['labels'] = torch.tensor(out['label'])
-        del out['label']  # Remove the original 'label' key    
     return out
 
 ## instantiate model
