@@ -126,7 +126,7 @@ class MultimodalModel(PreTrainedModel):
         super().__init__(config)
         self.num_classes = 5  # Example with 5 classes
         self.features = {}
-
+        
         # Initialize the models and set requires_grad = False to freeze them
         self.resnet_models = nn.ModuleDict()
         if config.resnet_model_paths:
@@ -202,6 +202,7 @@ class MultimodalModel(PreTrainedModel):
             nn.Dropout(0.3),
             nn.Linear(256, config.num_labels)
         )
+
         self.loss_fn = nn.CrossEntropyLoss()
 
     def get_classifier_in_features(self, model):
@@ -243,7 +244,7 @@ class MultimodalModel(PreTrainedModel):
     
     def forward(self, **inputs):
         
-        self.mlp = self.mlp.to(self.device)
+        self.mlp = self.mlp.to(device)
         features = []        
         labels = inputs.pop('labels', None)
 
@@ -252,24 +253,24 @@ class MultimodalModel(PreTrainedModel):
             
             if key in self.resnet_models.keys():
                 with torch.no_grad():
-                    resnet_features = self.resnet_models[key](input.squeeze(1).to(self.device))
+                    resnet_features = self.resnet_models[key](input.squeeze(1).to(device))
                 features.append(resnet_features)
             
             if key in self.vit_models.keys():
                 with torch.no_grad():
-                    vit_features = self.vit_models[key](pixel_values=input.squeeze(1).to(self.device),
+                    vit_features = self.vit_models[key](pixel_values=input.squeeze(1).to(device),
                                             output_hidden_states=True).hidden_states[-1][:, 0, :]
                 features.append(vit_features)
 
             if key in self.yolo_models.keys():
                 with torch.no_grad():
-                    yolo_features = self.yolo_models[key](input.to(self.device))
+                    yolo_features = self.yolo_models[key](input.to(device))
                 features.append(yolo_features)
             
             if key in self.nlp_transformers_models.keys():
                 with torch.no_grad():
-                    nlp_features = self.nlp_transformers_models[key](input['input_ids'].squeeze(1).to(self.device),
-                    input['attention_mask'].squeeze(1).to(self.device),
+                    nlp_features = self.nlp_transformers_models[key](input['input_ids'].squeeze(1).to(device),
+                    input['attention_mask'].squeeze(1).to(device),
                     output_hidden_states=True).hidden_states[-1][:, 0, :]
                 features.append(nlp_features)
             
@@ -316,3 +317,195 @@ class MultimodalModel(PreTrainedModel):
             state_dict = torch.load(os.path.join(save_directory, "pytorch_model.bin"), map_location='cpu')
         model.load_state_dict(state_dict)
         return model
+
+
+class MultimodalModelMetal(PreTrainedModel):
+    config_class = MultimodalConfig
+
+    def __init__(self, config: MultimodalConfig, device=torch.device("mps" if torch.torch.backends.mps.is_built() else "cuda" if torch.cuda.is_available() else "cpu")):
+        super().__init__(config)
+        self.num_classes = 5
+        self.features = {}
+
+        self.resnet_models = nn.ModuleDict()
+        if config.resnet_model_paths:
+            for model_id, model_path in config.resnet_model_paths.items():
+                model = models.resnet50() if "resnet50" in model_id.lower() else models.resnet18()
+                prev_fc = model.fc
+                model.fc = nn.Linear(model.fc.in_features, self.num_classes)
+                model.load_state_dict(torch.load(f"{model_path}/best_model_params.pt", map_location='cpu'))
+                model.fc = prev_fc
+                model.fc = nn.Identity()
+                for param in model.parameters(): 
+                    param.requires_grad = False
+                model.to(device)
+                self.resnet_models[model_id] = model
+                self.features[model_id] = prev_fc.in_features
+
+        self.vit_models = nn.ModuleDict()
+        if config.vit_model_paths:
+            for model_id, model_path in config.vit_model_paths.items():
+                model = ViTForImageClassification.from_pretrained(model_path)
+                for param in model.parameters():
+                    param.requires_grad = False
+                model.to(device)
+                self.vit_models[model_id] = model
+                self.features[model_id] = model.classifier.in_features
+
+        self.yolo_models = nn.ModuleDict()
+        if config.yolo_model_paths:
+            for model_id, model_path in config.yolo_model_paths.items():
+                if 'cls' in model_id:
+                    model = YOLO(os.path.join(model_path, 'best_model_params.pt'))
+                    sequential_model = model.model.model
+                    self.features[model_id] = sequential_model[-1].linear.in_features
+                    self.replace_yolo_last_linear_with_identity(sequential_model)
+                    for param in sequential_model.parameters():
+                        param.requires_grad = False
+                    model.to(device)
+                    self.yolo_models[model_id] = sequential_model
+                elif 'det' in model_id:
+                    model = YOLO(os.path.join(model_path, 'best_model_params.pt'))
+                    model.to(device)
+                    self.yolo_models[model_id] = model
+                    self.features[model_id] = None
+                    
+        self.nlp_transformers_models = nn.ModuleDict()
+        if config.nlp_transformers_model_paths:
+            for model_id, model_path in config.nlp_transformers_model_paths.items():
+                model = AutoModelForSequenceClassification.from_pretrained(model_path)
+                for param in model.parameters():
+                    param.requires_grad = False
+                model.to(device)
+                self.nlp_transformers_models[model_id] = model
+                self.features[model_id] = self.get_classifier_in_features(model)
+
+        self.mlp = nn.Sequential(
+            nn.Linear(sum(self.features.values()), 1024),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(1024, 512),
+            nn.ReLU(),
+            nn.Dropout(0.5),
+            nn.Linear(512, 256),
+            nn.ReLU(),
+            nn.Dropout(0.3),
+            nn.Linear(256, config.num_labels)
+        )
+        self.loss_fn = nn.CrossEntropyLoss()
+
+    def get_classifier_in_features(self, model):
+        """
+        Function to get the number of input features to the classifier layer.
+        Handles different model structures such as BERT and RoBERTa.
+        """
+        try:
+            # RoBERTa's classifier
+            return model.classifier.out_proj.in_features
+        except AttributeError:
+            pass
+
+        try:
+            # BERT's classifier
+            return model.classifier.linear.in_features
+        except AttributeError:
+            pass
+
+        try:
+            # DistilBERT's classifier
+            return model.classifier.in_features
+        except AttributeError:
+            pass
+
+        try: 
+            #ViT's classifier
+            return model.classifier.in_features
+        except AttributeError:
+            pass
+
+        try: 
+            return model.fc.in_features
+        except AttributeError:
+            pass
+
+        # Add other model types as needed
+        raise ValueError("Unknown model structure or unsupported model type.")
+    
+    def forward(self, **inputs):
+        device = self.device
+        self.mlp = self.mlp.to(device)
+        features = []        
+        labels = inputs.pop('labels', None)
+        
+        if labels is not None:
+            labels = labels.to(device)
+
+        for key in inputs.keys():
+            input = inputs[key]
+            
+            if key in self.resnet_models.keys():
+                with torch.no_grad():
+                    resnet_features = self.resnet_models[key](input.squeeze(1).to(device))
+                features.append(resnet_features)
+            
+            if key in self.vit_models.keys():
+                with torch.no_grad():
+                    vit_features = self.vit_models[key](pixel_values=input.squeeze(1).to(device),
+                                            output_hidden_states=True).hidden_states[-1][:, 0, :]
+                features.append(vit_features)
+
+            if key in self.yolo_models.keys():
+                with torch.no_grad():
+                    yolo_features = self.yolo_models[key](input.to(device))
+                features.append(yolo_features)
+            
+            if key in self.nlp_transformers_models.keys():
+                with torch.no_grad():
+                    nlp_features = self.nlp_transformers_models[key](input['input_ids'].squeeze(1).to(device),
+                    input['attention_mask'].squeeze(1).to(device),
+                    output_hidden_states=True).hidden_states[-1][:, 0, :]
+                features.append(nlp_features)
+            
+        features = torch.cat(features, dim=1)
+        logits = self.mlp(features)
+
+        loss = None
+        if labels is not None:
+            loss = self.loss_fn(logits.view(-1, self.config.num_labels), labels.view(-1)).to(device)
+
+        return {"loss": loss, "logits": logits}
+
+    @staticmethod
+    def replace_yolo_last_linear_with_identity(model):
+        for name, module in model.named_modules():
+            if isinstance(module, nn.Linear):
+                parent_name, child_name = name.rsplit('.',1)
+                parent = model
+                for part in parent_name.split('.'):
+                    parent = getattr(parent, part)
+                setattr(parent, child_name, nn.Identity())
+                return True
+        return False
+    
+    def save_pretrained(self, save_directory, state_dict=None, safe_serialization=False):
+        os.makedirs(save_directory, exist_ok=True)
+        if state_dict is None:
+            state_dict = self.state_dict()
+        if safe_serialization:
+            save_file(state_dict, os.path.join(save_directory, "model.safetensors"))
+        else:
+            print("save torch")
+            torch.save(state_dict, os.path.join(save_directory, "pytorch_model.bin"))
+        self.config.save_pretrained(save_directory)
+    
+    @classmethod
+    def from_pretrained(cls, save_directory, **kwargs):
+        config = cls.config_class.from_pretrained(save_directory)
+        model = cls(config)
+        if kwargs.get("safe_serialization", False):
+            state_dict = load_file(os.path.join(save_directory, "model.safetensors"))
+        else:
+            state_dict = torch.load(os.path.join(save_directory, "pytorch_model.bin"), map_location=self.device)
+        model.load_state_dict(state_dict)
+        return model
+

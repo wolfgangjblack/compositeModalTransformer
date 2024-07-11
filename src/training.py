@@ -154,3 +154,97 @@ def train_model(model,num_epochs, train_dataloader, eval_dataloader,
 
     save_file(model.state_dict(), 'final_model.safetensors')
     return model, history
+
+
+class CustomTrainer(Trainer):
+    def __init__(self, device=torch.device("mps" if torch.torch.backends.mps.is_built() else "cuda" if torch.cuda.is_available() else "cpu"), *args, **kwargs):
+        super().__init__(*args, **kwargs)
+        # Ensure model is on the correct device
+        self.model.to(device)
+
+        # Create optimizer and scheduler
+        self.create_optimizer_and_scheduler(num_training_steps=self.args.max_steps)
+
+    def _inner_training_loop(self, batch_size, args, resume_from_checkpoint, trial, ignore_keys_for_eval):
+        # Ensure model is on the correct device
+        self.model.to(self.model.device)
+
+        # Initialize tr_loss on the correct device
+        tr_loss = torch.tensor(0.0).to(self.model.device)
+        self.model.zero_grad()
+        self.control = self.callback_handler.on_train_begin(args, self.state, self.control)
+        model = self.model
+
+        self.state.epoch = 0
+        self.state.global_step = 0
+
+        for epoch in range(int(args.num_train_epochs)):
+            correct_predictions = 0
+            total_predictions = 0
+            epoch_steps = len(self.get_train_dataloader())
+            for step, inputs in enumerate(self.get_train_dataloader()):
+                tr_loss_step = self.training_step(model, inputs)
+                tr_loss_step = tr_loss_step.to(self.model.device)  # Ensure tr_loss_step is on the correct device
+                tr_loss += tr_loss_step
+                self.state.global_step += 1
+
+                # Calculate accuracy
+                outputs = self.model(**inputs)
+                logits = outputs["logits"]
+                labels = inputs["labels"]
+                predictions = torch.argmax(logits, dim=-1)
+                correct_predictions += (predictions == labels).sum().item()
+                total_predictions += labels.size(0)
+
+                if (step + 1) % args.logging_steps == 0:
+                    accuracy = correct_predictions / total_predictions
+                    logs = {
+                        "loss": tr_loss.item() / (step + 1),
+                        "accuracy": accuracy,
+                        "step": step + 1,
+                        "epoch_steps": epoch_steps
+                    }
+                    self.log(logs)
+
+                if (step + 1) % args.eval_steps == 0:
+                    self.evaluate()
+
+                if (step + 1) % args.gradient_accumulation_steps == 0 or (
+                    step + 1 == len(self.get_train_dataloader())
+                ):
+                    if args.fp16 and _use_native_amp:
+                        self.scaler.step(self.optimizer)
+                        self.scaler.update()
+                    else:
+                        self.optimizer.step()
+                    self.lr_scheduler.step()
+                    model.zero_grad()
+                    self.control = self.callback_handler.on_step_end(args, self.state, self.control)
+
+            self.state.epoch += 1
+            self.evaluate()
+
+        self.control = self.callback_handler.on_train_end(args, self.state, self.control)
+        return self._finalize_train(model, tr_loss)
+
+    def evaluate(self):
+        eval_dataloader = self.get_eval_dataloader()
+        output = self.prediction_loop(
+            eval_dataloader,
+            description="Evaluation",
+            prediction_loss_only=False
+        )
+
+        # Log evaluation metrics
+        self.log(output.metrics)
+        self.control = self.callback_handler.on_evaluate(self.args, self.state, self.control)
+
+        return output.metrics
+
+    def log(self, logs):
+        logs["epoch"] = self.state.epoch
+        logs["step"] = self.state.global_step
+        self.state.log_history.append(logs)
+        self.control = self.callback_handler.on_log(self.args, self.state, self.control)
+        if self.is_world_process_zero():
+            print(logs)
