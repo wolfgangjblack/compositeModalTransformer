@@ -1,0 +1,13 @@
+## logging configuration
+log_dir: "./logs"
+log_filename: "training_output" ##will have datetime prefix
+
+##data paths
+train_data_dir: "./data/datasets/may/train"
+val_data_dir: "./data/datasets/may/val"
+
+##Training params
+learning_rate: 5e-5
+num_epochs: 25 # number of epochs to train -> Note, we have early stopping activated 
+batch_size: 32
+target_class: 2 # target class to optimize for f1-> {0: 'PG', 1: "PG13", 2: "R", 3: "X", 4: "XXX"}
